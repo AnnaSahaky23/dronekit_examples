@@ -1,14 +1,21 @@
+import collections
+import collections.abc
+collections.MutableMapping = collections.abc.MutableMapping
+
 import tkinter as tk
 from tkinter import messagebox
-from dronekit import connect, VehicleMode
 import threading
+import math
+from dronekit import connect, VehicleMode
+from tkintermapview import TkinterMapView
 
 
 class GroundControlStation:
     def __init__(self, root):
         self.root = root
         self.root.title("Ground Control Station")
-        self.root.geometry("420x820")
+        self.root.geometry("1050x820")
+        self.root.minsize(850, 750)
         self.root.configure(bg="#252A27")
 
         self.vehicle = None
@@ -24,21 +31,32 @@ class GroundControlStation:
         self.rc_bars = {}
         self.rc_labels = {}
 
+        self.drone_marker = None
+        self.heading_line = None
+        self.follow_drone = tk.BooleanVar(value=True)
+
         self.create_widgets()
 
         self.root.bind_all("<KeyPress>", self.key_press)
         self.root.bind_all("<KeyRelease>", self.key_release)
         self.root.bind("<FocusOut>", self.focus_lost)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-
         self.root.focus_set()
 
         self.update_status()
         self.update_rc()
+        self.update_map()
 
     def create_widgets(self):
+        left = tk.Frame(self.root, bg="#252A27", width=420)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
+
+        map_frame = tk.Frame(self.root, bg="#252A27")
+        map_frame.pack(side="right", fill="both", expand=True, padx=(0, 10), pady=10)
+
         conn_frame = tk.LabelFrame(
-            self.root, text="Connection Settings",
+            left, text="Connection Settings",
             padx=10, pady=10, bg="#252A27", fg="white"
         )
         conn_frame.pack(fill="x", padx=15, pady=10)
@@ -49,7 +67,7 @@ class GroundControlStation:
         ).pack(anchor="w")
 
         self.conn_entry = tk.Entry(conn_frame)
-        self.conn_entry.insert(0, "tcp:host.docker.internal:5763")
+        self.conn_entry.insert(0, "127.0.0.1:14550")
         self.conn_entry.pack(fill="x", pady=5)
 
         btn_frame = tk.Frame(conn_frame, bg="#252A27")
@@ -68,7 +86,7 @@ class GroundControlStation:
         ).pack(side="right", expand=True, fill="x", padx=(5, 0))
 
         state_frame = tk.LabelFrame(
-            self.root, text="Current State",
+            left, text="Current State",
             padx=10, pady=10, bg="#252A27", fg="white"
         )
         state_frame.pack(fill="x", padx=15, pady=5)
@@ -98,7 +116,7 @@ class GroundControlStation:
         self.altitude_label.pack(fill="x")
 
         control_frame = tk.LabelFrame(
-            self.root, text="Flight Controls",
+            left, text="Flight Controls",
             padx=10, pady=10, bg="#252A27", fg="white"
         )
         control_frame.pack(fill="x", padx=15, pady=5)
@@ -140,7 +158,7 @@ class GroundControlStation:
             ).pack(fill="x", pady=2)
 
         rc_frame = tk.LabelFrame(
-            self.root, text="RC Channels",
+            left, text="RC Channels",
             padx=10, pady=10, bg="#252A27", fg="white"
         )
         rc_frame.pack(fill="x", padx=15, pady=5)
@@ -183,12 +201,35 @@ class GroundControlStation:
         ).pack(pady=5)
 
         self.status_label = tk.Label(
-            self.root, text="Status: Disconnected",
+            left, text="Status: Disconnected",
             bg="#252A27", fg="white", anchor="w"
         )
-        self.status_label.pack(
-            side="bottom", fill="x", padx=10, pady=5
+        self.status_label.pack(side="bottom", fill="x", padx=10, pady=5)
+
+        map_top = tk.Frame(map_frame, bg="#252A27")
+        map_top.pack(fill="x", pady=(0, 5))
+
+        tk.Label(
+            map_top, text="Drone Map", bg="#252A27",
+            fg="white", font=("Arial", 13, "bold")
+        ).pack(side="left")
+
+        tk.Checkbutton(
+            map_top, text="Follow drone", variable=self.follow_drone,
+            bg="#252A27", fg="white", selectcolor="#252A27",
+            activebackground="#252A27", activeforeground="white"
+        ).pack(side="right")
+
+        self.map_widget = TkinterMapView(map_frame, corner_radius=0)
+        self.map_widget.pack(fill="both", expand=True)
+        self.map_widget.set_position(40.18, 44.51)  # Initial view (Yerevan)
+        self.map_widget.set_zoom(15)
+
+        self.map_label = tk.Label(
+            map_frame, text="Waiting for drone GPS...",
+            bg="#252A27", fg="white", anchor="w"
         )
+        self.map_label.pack(fill="x", pady=(5, 0))
 
     def is_connected(self):
         if self.vehicle is None:
@@ -209,21 +250,15 @@ class GroundControlStation:
 
         def task():
             try:
-                vehicle = connect(
-                    conn_string, wait_ready=True, timeout=30
-                )
+                vehicle = connect(conn_string, wait_ready=True, timeout=30)
                 if self.running:
-                    self.root.after(
-                        0, lambda: self.connection_success(vehicle)
-                    )
+                    self.root.after(0, lambda: self.connection_success(vehicle))
                 else:
                     vehicle.close()
             except Exception as e:
                 error = str(e)
                 if self.running:
-                    self.root.after(
-                        0, lambda: self.connection_error(error)
-                    )
+                    self.root.after(0, lambda: self.connection_error(error))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -237,6 +272,15 @@ class GroundControlStation:
         self.connecting = False
         self.status_label.config(text="Status: Connection Failed")
         messagebox.showerror("Error", error)
+
+    def clear_map(self):
+        if self.drone_marker is not None:
+            self.drone_marker.delete()
+            self.drone_marker = None
+        if self.heading_line is not None:
+            self.heading_line.delete()
+            self.heading_line = None
+        self.map_label.config(text="Waiting for drone GPS...")
 
     def close_connection(self):
         if self.vehicle is None:
@@ -254,6 +298,7 @@ class GroundControlStation:
             self.throttle = 1000
             self.yaw = 1500
 
+            self.clear_map()
             self.status_label.config(text="Status: Disconnected")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -292,30 +337,21 @@ class GroundControlStation:
             altitude = float(self.altitude_entry.get())
 
             if altitude <= 0:
-                messagebox.showwarning(
-                    "Warning", "Altitude must be greater than 0"
-                )
+                messagebox.showwarning("Warning", "Altitude must be greater than 0")
                 return
 
             if self.vehicle.mode.name != "GUIDED":
-                messagebox.showwarning(
-                    "Warning", "Switch to GUIDED mode first!"
-                )
+                messagebox.showwarning("Warning", "Switch to GUIDED mode first!")
                 return
 
             if not self.vehicle.armed:
-                messagebox.showwarning(
-                    "Warning", "Arm the drone first!"
-                )
+                messagebox.showwarning("Warning", "Arm the drone first!")
                 return
 
             self.pressed_keys.clear()
             self.vehicle.channels.overrides = {}
             self.vehicle.simple_takeoff(altitude)
-
-            self.status_label.config(
-                text=f"Status: Taking off to {altitude} m"
-            )
+            self.status_label.config(text=f"Status: Taking off to {altitude} m")
             self.root.focus_set()
 
         except ValueError:
@@ -325,31 +361,24 @@ class GroundControlStation:
 
     def key_press(self, event):
         key = event.keysym.lower()
+        keys = ["w", "s", "a", "d", "left", "right", "up", "down"]
 
-        if key not in [
-            "w", "s", "a", "d",
-            "left", "right", "up", "down"
-        ]:
+        if key not in keys:
             return
-
-        # Allow normal editing of input fields.
         if isinstance(self.root.focus_get(), tk.Entry):
             return
 
         if self.is_connected():
             self.pressed_keys.add(key)
-
         return "break"
 
     def key_release(self, event):
         key = event.keysym.lower()
         self.pressed_keys.discard(key)
 
-        if key in [
-            "w", "s", "a", "d",
-            "left", "right", "up", "down"
-        ] and not isinstance(self.root.focus_get(), tk.Entry):
-            return "break"
+        if key in ["w", "s", "a", "d", "left", "right", "up", "down"]:
+            if not isinstance(self.root.focus_get(), tk.Entry):
+                return "break"
 
     def focus_lost(self, event):
         if event.widget == self.root:
@@ -368,8 +397,6 @@ class GroundControlStation:
                     if mode == "LOITER":
                         self.throttle = 1500
                     else:
-                        # Manual throttle starting point.
-                        # Not an automatic hover value.
                         self.throttle = 1000
 
                     if "left" in self.pressed_keys:
@@ -392,8 +419,6 @@ class GroundControlStation:
                     if "s" in self.pressed_keys:
                         self.throttle = 1400
 
-                    # In STABILIZE, do not force throttle
-                    # to 1000 when no throttle key is held.
                     overrides = {
                         "1": self.roll,
                         "2": self.pitch,
@@ -409,7 +434,6 @@ class GroundControlStation:
                 else:
                     self.pressed_keys.clear()
                     self.vehicle.channels.overrides = {}
-
                     self.roll = 1500
                     self.pitch = 1500
                     self.throttle = 1000
@@ -433,16 +457,8 @@ class GroundControlStation:
         position = (value - 1000) / 1000 * 170
         position = max(0, min(170, position))
 
-        canvas.create_rectangle(
-            0, 0, position, 18,
-            fill="#81C784", outline=""
-        )
-
-        canvas.create_line(
-            85, 0, 85, 18,
-            fill="white", dash=(2, 2)
-        )
-
+        canvas.create_rectangle(0, 0, position, 18, fill="#81C784", outline="")
+        canvas.create_line(85, 0, 85, 18, fill="white", dash=(2, 2))
         self.rc_labels[channel].config(text=str(value))
 
     def update_status(self):
@@ -455,28 +471,55 @@ class GroundControlStation:
                 if altitude is None:
                     altitude = 0
 
-                self.connection_label.config(
-                    text="Connected: Yes", fg="#81C784"
-                )
+                self.connection_label.config(text="Connected: Yes", fg="#81C784")
                 self.mode_label.config(text=f"Mode: {mode}")
-                self.armed_label.config(
-                    text=f"Armed: {'Yes' if armed else 'No'}"
-                )
-                self.altitude_label.config(
-                    text=f"Altitude: {altitude:.2f} m"
-                )
+                self.armed_label.config(text=f"Armed: {'Yes' if armed else 'No'}")
+                self.altitude_label.config(text=f"Altitude: {altitude:.2f} m")
             except Exception:
                 pass
         else:
-            self.connection_label.config(
-                text="Connected: No", fg="white"
-            )
+            self.connection_label.config(text="Connected: No", fg="white")
             self.mode_label.config(text="Mode: -")
             self.armed_label.config(text="Armed: No")
             self.altitude_label.config(text="Altitude: 0.00 m")
 
         if self.running:
             self.root.after(500, self.update_status)
+
+    def update_map(self):
+        if self.is_connected():
+            try:
+                pos = self.vehicle.location.global_frame
+                yaw = self.vehicle.attitude.yaw
+
+                if pos.lat is not None and pos.lon is not None:
+                    lat, lon = pos.lat, pos.lon
+                    if self.drone_marker is None:
+                        self.drone_marker = self.map_widget.set_marker(lat, lon, text="Drone")
+                    else:
+                        self.drone_marker.set_position(lat, lon)
+
+                    if yaw is not None:
+                        end_lat = lat + 20 * math.cos(yaw) / 111320
+                        end_lon = lon + 20 * math.sin(yaw) / (111320 * max(0.01, math.cos(math.radians(lat))))
+                        if self.heading_line is not None:
+                            self.heading_line.delete()
+                        self.heading_line = self.map_widget.set_path(
+                            [(lat, lon), (end_lat, end_lon)], color="green", width=5
+                        )
+
+                    if self.follow_drone.get():
+                        self.map_widget.set_position(lat, lon)
+
+                    angle = f"{math.degrees(yaw) % 360:.0f}°" if yaw is not None else "-"
+                    self.map_label.config(text=f"Lat: {lat:.6f}  Lon: {lon:.6f}  Yaw: {angle}")
+            except Exception as e:
+                print("Map error:", e)
+        elif self.drone_marker is not None:
+            self.clear_map()
+
+        if self.running:
+            self.root.after(500, self.update_map)
 
     def on_close(self):
         self.running = False
