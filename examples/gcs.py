@@ -332,7 +332,6 @@ class GroundControlStation:
         ]:
             return
 
-        # Allow normal editing of input fields.
         if isinstance(self.root.focus_get(), tk.Entry):
             return
 
@@ -368,8 +367,6 @@ class GroundControlStation:
                     if mode == "LOITER":
                         self.throttle = 1500
                     else:
-                        # Manual throttle starting point.
-                        # Not an automatic hover value.
                         self.throttle = 1000
 
                     if "left" in self.pressed_keys:
@@ -392,8 +389,6 @@ class GroundControlStation:
                     if "s" in self.pressed_keys:
                         self.throttle = 1400
 
-                    # In STABILIZE, do not force throttle
-                    # to 1000 when no throttle key is held.
                     overrides = {
                         "1": self.roll,
                         "2": self.pitch,
